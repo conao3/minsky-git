@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# Compile a two-counter Minsky machine into the fetch refspecs of a Git repository.
+#
+# The whole machine configuration is the name of one ref:
+#   refs/A/s<state>x<"a" repeated A times>y<"b" repeated B times>z
+# Every instruction becomes one or two glob refspecs of the remote "self" (url ".").
+# Two fetches of "self" perform one step, and "git fetch loop" recurses until the
+# machine halts.
+set -euo pipefail
+
+readonly EXIT_USAGE=252
+readonly EXIT_INPUT=254
+
+usage_top() {
+	cat <<'EOF'
+usage: git-minsky [--output json|text] <command> <subcommand> [parameters]
+
+commands:
+  machine    compile a Minsky machine into a Git repository and read its state
+
+Run "git-minsky machine help" for the subcommands.
+EOF
+}
+
+usage_machine() {
+	cat <<'EOF'
+usage: git-minsky machine <subcommand> [parameters]
+
+subcommands:
+  create-repository  --repository-path <dir> --program <text|file://path>
+                     [--counter-a <n>] [--counter-b <n>]
+      Create a repository whose .git/config runs the program on "git fetch loop".
+  describe-state     --repository-path <dir>
+      Print the current state and counters of the machine in the repository.
+
+Program lines (blank lines and lines starting with # are ignored):
+  <state> inc a|b <next>
+  <state> dec a|b <next-if-nonzero> <next-if-zero>
+  <state> halt
+The first instruction's state is the start state. State names use 0-9, A-Z, and
+a-z except x.
+EOF
+}
+
+die() {
+	local code=$1
+	shift
+	echo "git-minsky: $*" >&2
+	exit "$code"
+}
+
+read_value() {
+	case $1 in
+	file://*)
+		local path=${1#file://}
+		[[ -r $path ]] || die "$EXIT_USAGE" "cannot read $path"
+		cat -- "$path"
+		;;
+	*) printf '%s\n' "$1" ;;
+	esac
+}
+
+repeat() {
+	local out=
+	for ((i = 0; i < $2; i++)); do out+=$1; done
+	printf '%s' "$out"
+}
+
+json_string() {
+	local s=${1//\\/\\\\}
+	printf '"%s"' "${s//\"/\\\"}"
+}
+
+create_repository() {
+	local repo='' program='' a=0 b=0
+	while (($#)); do
+		case $1 in
+		--repository-path) repo=${2-} ;;
+		--program) program=$(read_value "${2-}") ;;
+		--counter-a) a=${2-} ;;
+		--counter-b) b=${2-} ;;
+		*) die "$EXIT_USAGE" "unknown parameter: $1" ;;
+		esac
+		(($# >= 2)) || die "$EXIT_USAGE" "missing value for $1"
+		shift 2
+	done
+	[[ -n $repo ]] || die "$EXIT_USAGE" "--repository-path is required"
+	[[ -n $program ]] || die "$EXIT_USAGE" "--program is required"
+	[[ $a =~ ^[0-9]+$ ]] || die "$EXIT_USAGE" "--counter-a must be a non-negative integer"
+	[[ $b =~ ^[0-9]+$ ]] || die "$EXIT_USAGE" "--counter-b must be a non-negative integer"
+	[[ ! -e $repo ]] || die "$EXIT_INPUT" "$repo already exists"
+
+	local -a specs=()
+	local start='' line s n1 n2
+	local -a w
+	while IFS= read -r line; do
+		read -r -a w <<<"${line%%#*}" || true
+		((${#w[@]})) || continue
+		for s in "${w[0]}" "${w[@]:3}"; do
+			[[ $s =~ ^[0-9A-Za-wyz]+$ ]] || die "$EXIT_INPUT" "bad state name in: $line"
+		done
+		s=${w[0]} n1=${w[3]-} n2=${w[4]-}
+		[[ -n $start ]] || start=$s
+		case "${#w[@]} ${w[*]:1:2}" in
+		"4 inc a") specs+=("+refs/A/s${s}x*:refs/B/s${n1}xa*") ;;
+		"4 inc b") specs+=("+refs/A/s${s}x*z:refs/B/s${n1}x*bz") ;;
+		"5 dec a")
+			specs+=("+refs/A/s${s}xa*:refs/B/s${n1}x*")
+			specs+=("+refs/A/s${s}xy*:refs/B/s${n2}xy*")
+			;;
+		"5 dec b")
+			specs+=("+refs/A/s${s}x*bz:refs/B/s${n1}x*z")
+			specs+=("+refs/A/s${s}x*yz:refs/B/s${n2}x*yz")
+			;;
+		"2 halt")
+			specs+=("+refs/A/s${s}x*:refs/B/s${s}x*")
+			specs+=("+refs/A/s${s}x*:refs/H/*")
+			;;
+		*) die "$EXIT_INPUT" "bad instruction: $line" ;;
+		esac
+	done <<<"$program"
+	[[ -n $start ]] || die "$EXIT_INPUT" "the program has no instructions"
+
+	git init -q "$repo"
+	git -C "$repo" -c user.name=git-minsky -c user.email=git-minsky@example.invalid \
+		commit -q --allow-empty -m "the object every machine ref points at"
+	local commit
+	commit=$(git -C "$repo" rev-parse HEAD)
+	local -a config=(
+		core.hooksPath /dev/null
+		maintenance.auto false
+		remote.self.url .
+		remote.self.prune true
+		remote.self.tagOpt --no-tags
+		remote.self.fetch '+refs/B/*:refs/A/*'
+	)
+	for spec in "${specs[@]}"; do config+=(remote.self.fetch "$spec"); done
+	config+=(remotes.loop self remotes.loop loop include.path refs/H)
+	for ((i = 0; i < ${#config[@]}; i += 2)); do
+		git -C "$repo" config --add "${config[i]}" "${config[i + 1]}"
+	done
+	local ref
+	ref="refs/A/s${start}x$(repeat a "$a")y$(repeat b "$b")z"
+	git -C "$repo" update-ref "$ref" "$commit"
+
+	if [[ $output == text ]]; then
+		printf '%s\t%s\n' "$repo" "$ref"
+	else
+		printf '{"RepositoryPath":%s,"Ref":%s,"RefspecCount":%d}\n' \
+			"$(json_string "$repo")" "$(json_string "$ref")" "$((${#specs[@]} + 1))"
+	fi
+}
+
+describe_state() {
+	local repo=''
+	while (($#)); do
+		case $1 in
+		--repository-path) repo=${2-} ;;
+		*) die "$EXIT_USAGE" "unknown parameter: $1" ;;
+		esac
+		(($# >= 2)) || die "$EXIT_USAGE" "missing value for $1"
+		shift 2
+	done
+	[[ -n $repo ]] || die "$EXIT_USAGE" "--repository-path is required"
+	local refs=$repo/.git/refs
+	[[ -d $refs ]] || die "$EXIT_INPUT" "$repo is not a repository made by git-minsky"
+	# Once the machine halts, .git/config no longer parses, so read the ref files directly.
+	local name='' dir
+	for dir in A B; do
+		[[ -d $refs/$dir ]] || continue
+		for f in "$refs/$dir"/s*; do
+			[[ -e $f ]] && name=${f##*/}
+		done
+	done
+	[[ $name =~ ^s([0-9A-Za-wyz]+)x(a*)y(b*)z$ ]] || die "$EXIT_INPUT" "no machine ref in $repo"
+	local state=${BASH_REMATCH[1]} a=${#BASH_REMATCH[2]} b=${#BASH_REMATCH[3]} halted=false
+	[[ -d $refs/H ]] && halted=true
+	if [[ $output == text ]]; then
+		printf '%s\t%d\t%d\t%s\n' "$state" "$a" "$b" "$halted"
+	else
+		printf '{"State":%s,"CounterA":%d,"CounterB":%d,"Halted":%s}\n' \
+			"$(json_string "$state")" "$a" "$b" "$halted"
+	fi
+}
+
+output=json
+while (($#)); do
+	case $1 in
+	--output)
+		[[ ${2-} == json || ${2-} == text ]] || die "$EXIT_USAGE" "--output must be json or text"
+		output=$2
+		shift 2
+		;;
+	*) break ;;
+	esac
+done
+
+case "${1-} ${2-}" in
+"machine create-repository")
+	shift 2
+	create_repository "$@"
+	;;
+"machine describe-state")
+	shift 2
+	describe_state "$@"
+	;;
+"machine help" | "machine ") usage_machine ;;
+"help " | " ") usage_top ;;
+*)
+	usage_top >&2
+	exit "$EXIT_USAGE"
+	;;
+esac

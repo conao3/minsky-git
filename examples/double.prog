@@ -1,0 +1,5 @@
+# b := 2 * a
+1 dec a 2 H
+2 inc b 3
+3 inc b 1
+H halt

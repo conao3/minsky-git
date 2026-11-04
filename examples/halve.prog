@@ -1,0 +1,6 @@
+# b := a / 2, halting in E when a was even and in O when a was odd
+1 dec a 2 E
+2 dec a 3 O
+3 inc b 1
+E halt
+O halt
