@@ -32,7 +32,7 @@
               {
                 meta = {
                   description = "A two-counter Minsky machine that runs on git fetch refspecs";
-                  homepage = "https://github.com/conao3/bash-git-minsky";
+                  homepage = "https://github.com/conao3/minsky-git";
                   license = pkgs.lib.licenses.asl20;
                   mainProgram = "git-minsky";
                   platforms = pkgs.lib.platforms.unix;

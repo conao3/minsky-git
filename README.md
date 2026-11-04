@@ -1,4 +1,4 @@
-# bash-git-minsky
+# minsky-git
 
 `git-minsky` compiles a two-counter Minsky machine into the fetch refspecs of a Git repository.
 Running `git fetch loop` in that repository executes the program until it halts.
@@ -10,7 +10,7 @@ Two-counter Minsky machines are Turing complete, so `git fetch` with a crafted `
 ## Quick start
 
 ```console
-$ git clone https://github.com/conao3/bash-git-minsky && cd bash-git-minsky
+$ git clone https://github.com/conao3/minsky-git && cd minsky-git
 $ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 $ nix run . -- machine create-repository \
     --repository-path /tmp/m --program file://examples/double.prog --counter-a 3
