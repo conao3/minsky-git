@@ -13,11 +13,11 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="#program-format">Program format</a> ·
-  <a href="#command-line">Command line</a> ·
-  <a href="#limits">Limits</a> ·
+  <a href="#quick-start">Quick start</a> |
+  <a href="#how-it-works">How it works</a> |
+  <a href="#program-format">Program format</a> |
+  <a href="#command-line">Command line</a> |
+  <a href="#limits">Limits</a> |
   <a href="#prior-work">Prior work</a>
 </p>
 
